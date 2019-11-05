@@ -8,6 +8,7 @@ from utils import *
 import tensorflow as tf
 from tensorflow import keras
 import tensorflow.keras.backend as K
+#K.set_floatx('float64')
 
 # INITIALIZE PARAMETERS
 parser = argparse.ArgumentParser()
@@ -29,6 +30,7 @@ if args.train_proportion > 0.8:
 #    args.gpu = select_free_gpu()
 #os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 #os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
 
 [user2id, user_sequence_id, user_timediffs_sequence, user_previous_itemid_sequence,
  item2id, item_sequence_id, item_timediffs_sequence, 
@@ -97,36 +99,36 @@ with trange(args.epochs) as progress_bar_1:
 
         # TRAIN TILL THE END OF TRAINING INTERACTION IDX
         with trange(train_end_idx) as progress_bar_2:
-            with tf.GradientTape() as tape:
-                for j in progress_bar_2:
-                    progress_bar_2.set_description('Processed %dth interactions' % j)
+            for j in progress_bar_2:
+                progress_bar_2.set_description('Processed %dth interactions' % j)
 
                     # READ INTERACTION J
-                    userid = user_sequence_id[j]
-                    itemid = item_sequence_id[j]
-                    feature = feature_sequence[j]
-                    user_timediff = user_timediffs_sequence[j]
-                    item_timediff = item_timediffs_sequence[j]
+                userid = user_sequence_id[j]
+                itemid = item_sequence_id[j]
+                feature = feature_sequence[j]
+                user_timediff = user_timediffs_sequence[j]
+                item_timediff = item_timediffs_sequence[j]
 
-                    # CREATE T-BATCHES: ADD INTERACTION J TO THE CORRECT T-BATCH
-                    tbatch_to_insert = max(lib.tbatchid_user[userid], lib.tbatchid_item[itemid]) + 1 
-                    lib.tbatchid_user[userid] = tbatch_to_insert 
-                    lib.tbatchid_item[itemid] = tbatch_to_insert
+                # CREATE T-BATCHES: ADD INTERACTION J TO THE CORRECT T-BATCH
+                tbatch_to_insert = max(lib.tbatchid_user[userid], lib.tbatchid_item[itemid]) + 1 
+                lib.tbatchid_user[userid] = tbatch_to_insert 
+                lib.tbatchid_item[itemid] = tbatch_to_insert
 
-                    lib.current_tbatches_user[tbatch_to_insert].append(userid)
-                    lib.current_tbatches_item[tbatch_to_insert].append(itemid)
-                    lib.current_tbatches_feature[tbatch_to_insert].append(feature)
-                    lib.current_tbatches_interactionids[tbatch_to_insert].append(j)
-                    lib.current_tbatches_user_timediffs[tbatch_to_insert].append(user_timediff)
-                    lib.current_tbatches_item_timediffs[tbatch_to_insert].append(item_timediff)
-                    lib.current_tbatches_previous_item[tbatch_to_insert].append(user_previous_itemid_sequence[j])
+                lib.current_tbatches_user[tbatch_to_insert].append(userid)
+                lib.current_tbatches_item[tbatch_to_insert].append(itemid)
+                lib.current_tbatches_feature[tbatch_to_insert].append(feature)
+                lib.current_tbatches_interactionids[tbatch_to_insert].append(j)
+                lib.current_tbatches_user_timediffs[tbatch_to_insert].append(user_timediff)
+                lib.current_tbatches_item_timediffs[tbatch_to_insert].append(item_timediff)
+                lib.current_tbatches_previous_item[tbatch_to_insert].append(user_previous_itemid_sequence[j])
 
-                    timestamp = timestamp_sequence[j]
-                    if tbatch_start_time is None:
-                        tbatch_start_time = timestamp
+                timestamp = timestamp_sequence[j]
+                if tbatch_start_time is None:
+                    tbatch_start_time = timestamp
 
-                    # AFTER ALL INTERACTIONS IN THE TIMESPAN ARE CONVERTED TO T-BATCHES, FORWARD PASS TO CREATE EMBEDDING TRAJECTORIES AND CALCULATE PREDICTION LOSS
-                    if timestamp - tbatch_start_time > tbatch_timespan:
+                # AFTER ALL INTERACTIONS IN THE TIMESPAN ARE CONVERTED TO T-BATCHES, FORWARD PASS TO CREATE EMBEDDING TRAJECTORIES AND CALCULATE PREDICTION LOSS
+                if timestamp - tbatch_start_time > tbatch_timespan:
+                    with tf.GradientTape() as tape:
                         tbatch_start_time = timestamp # RESET START TIME FOR THE NEXT TBATCHES
 
                         # ITERATE OVER ALL T-BATCHES
@@ -149,14 +151,14 @@ with trange(args.epochs) as progress_bar_1:
                                 # PROJECT USER EMBEDDING TO CURRENT TIME
                                 user_embedding_input = tf.gather(user_embeddings, tbatch_userids)
                                 user_projected_embedding = model.call(user_embedding_input, item_embedding_previous, timediffs=user_timediffs_tensor, features=feature_tensor, select='project')
-                                user_item_embedding = K.concatenate([user_projected_embedding, item_embedding_previous, tf.gather(item_embedding_static, tbatch_itemids_previous), tf.gather(user_embedding_static, tbatch_userids)])
+                                user_item_embedding = tf.keras.layers.concatenate([user_projected_embedding, item_embedding_previous, tf.gather(item_embedding_static, tbatch_itemids_previous), tf.gather(user_embedding_static, tbatch_userids)])
 
                                 # PREDICT NEXT ITEM EMBEDDING                            
                                 predicted_item_embedding = model.predict_item_embedding(user_item_embedding)
 
                                 # CALCULATE PREDICTION LOSS
                                 item_embedding_input = tf.gather(item_embeddings, tbatch_itemids)
-                                loss += MSELoss(K.concatenate([item_embedding_input, tf.gather(item_embedding_static, tbatch_itemids)]), predicted_item_embedding)
+                                loss += MSELoss(tf.keras.layers.concatenate([item_embedding_input, tf.gather(item_embedding_static, tbatch_itemids)]), predicted_item_embedding)
 
                                 # UPDATE DYNAMIC EMBEDDINGS AFTER INTERACTION
                                 user_embedding_output = model.call(user_embedding_input, item_embedding_input, timediffs=user_timediffs_tensor, features=feature_tensor, select='user_update')

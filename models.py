@@ -2,8 +2,8 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 import tensorflow.keras.backend as K
-#simport torch
-import gpustat
+#import torch
+#import gpustat
 from collections import defaultdict
 
 # SELECT THE GPU WITH MOST FREE MEMORY TO SCHEDULE JOB 

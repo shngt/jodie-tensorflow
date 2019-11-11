@@ -10,6 +10,27 @@ from tensorflow import keras
 import tensorflow.keras.backend as K
 #K.set_floatx('float64')
 
+@tf.function
+def jodie_call(model, user_embedding_input, item_embedding_input, item_embedding_previous, user_timediffs_tensor, item_timediffs_tensor, feature_tensor, static_item_embedding_previous, static_user_embeddings):
+    # PROJECT USER EMBEDDING TO CURRENT TIME
+    user_projected_embedding = model.call(user_embedding_input, item_embedding_previous, timediffs=user_timediffs_tensor, features=feature_tensor, select='project')
+    user_item_embedding = tf.keras.layers.concatenate([user_projected_embedding, item_embedding_previous, static_item_embedding_previous, static_user_embeddings])
+
+    # PREDICT NEXT ITEM EMBEDDING                            
+    predicted_item_embedding = model.predict_item_embedding(user_item_embedding)
+
+    # UPDATE DYNAMIC EMBEDDINGS AFTER INTERACTION
+    user_embedding_output = model.call(user_embedding_input, item_embedding_input, timediffs=user_timediffs_tensor, features=feature_tensor, select='user_update')
+    item_embedding_output = model.call(user_embedding_input, item_embedding_input, timediffs=item_timediffs_tensor, features=feature_tensor, select='item_update')
+
+    return user_embedding_output, item_embedding_output, predicted_item_embedding
+
+@tf.function
+def calc_prediction_loss(item_embedding_input, static_item_embeddings, predicted_item_embedding, loss):
+    true_item_embedding = tf.keras.layers.concatenate([item_embedding_input, static_item_embeddings])
+    loss += MSELoss(true_item_embedding, predicted_item_embedding)
+    return loss
+
 # INITIALIZE PARAMETERS
 parser = argparse.ArgumentParser()
 parser.add_argument('--network', required=True, help='Name of the network/dataset')
@@ -30,7 +51,7 @@ if args.train_proportion > 0.8:
 #    args.gpu = select_free_gpu()
 #os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 #os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
+#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
 
 [user2id, user_sequence_id, user_timediffs_sequence, user_previous_itemid_sequence,
  item2id, item_sequence_id, item_timediffs_sequence, 
@@ -87,8 +108,8 @@ with trange(args.epochs) as progress_bar_1:
     for ep in progress_bar_1:
         progress_bar_1.set_description('Epoch %d of %d' % (ep, args.epochs))
         # INITIALIZE EMBEDDING TRAJECTORY STORAGE
-        user_embeddings_timeseries = tf.Variable(tf.zeros([num_interactions, args.embedding_dim], tf.float32))
-        item_embeddings_timeseries = tf.Variable(tf.zeros([num_interactions, args.embedding_dim], tf.float32))
+        user_embeddings_timeseries = tf.constant(tf.zeros([num_interactions, args.embedding_dim], tf.float32))
+        item_embeddings_timeseries = tf.constant(tf.zeros([num_interactions, args.embedding_dim], tf.float32))
 
         reinitialize_tbatches()
         total_loss, loss, total_interaction_count = 0, 0, 0
@@ -102,7 +123,7 @@ with trange(args.epochs) as progress_bar_1:
             for j in progress_bar_2:
                 progress_bar_2.set_description('Processed %dth interactions' % j)
 
-                    # READ INTERACTION J
+                # READ INTERACTION J
                 userid = user_sequence_id[j]
                 itemid = item_sequence_id[j]
                 feature = feature_sequence[j]
@@ -142,45 +163,40 @@ with trange(args.epochs) as progress_bar_1:
                                 tbatch_userids = tf.constant(lib.current_tbatches_user[i], tf.int64) # Recall "lib.current_tbatches_user[i]" has unique elements
                                 tbatch_itemids = tf.constant(lib.current_tbatches_item[i], tf.int64) # Recall "lib.current_tbatches_item[i]" has unique elements
                                 tbatch_interactionids = tf.constant(lib.current_tbatches_interactionids[i], tf.int64) 
-                                feature_tensor = tf.Variable(lib.current_tbatches_feature[i], tf.float32) # Recall "lib.current_tbatches_feature[i]" is list of list, so "feature_tensor" is a 2-d tensor
-                                user_timediffs_tensor = tf.reshape(tf.Variable(lib.current_tbatches_user_timediffs[i], tf.float32), [-1, 1])
-                                item_timediffs_tensor = tf.reshape(tf.Variable(lib.current_tbatches_item_timediffs[i], tf.float32), [-1, 1])
+                                feature_tensor = tf.constant(lib.current_tbatches_feature[i], tf.float32) # Recall "lib.current_tbatches_feature[i]" is list of list, so "feature_tensor" is a 2-d tensor
+                                user_timediffs_tensor = tf.reshape(tf.constant(lib.current_tbatches_user_timediffs[i], tf.float32), [-1, 1])
+                                item_timediffs_tensor = tf.reshape(tf.constant(lib.current_tbatches_item_timediffs[i], tf.float32), [-1, 1])
                                 tbatch_itemids_previous = tf.constant(lib.current_tbatches_previous_item[i], tf.int64)
                                 item_embedding_previous = tf.gather(item_embeddings, tbatch_itemids_previous)
+                                static_item_embedding_previous = tf.gather(item_embedding_static, tbatch_itemids_previous)
+                                static_user_embeddings = tf.gather(user_embedding_static, tbatch_userids)
+                                static_item_embeddings = tf.gather(item_embedding_static, tbatch_itemids)
 
-                                # PROJECT USER EMBEDDING TO CURRENT TIME
                                 user_embedding_input = tf.gather(user_embeddings, tbatch_userids)
-                                user_projected_embedding = model.call(user_embedding_input, item_embedding_previous, timediffs=user_timediffs_tensor, features=feature_tensor, select='project')
-                                user_item_embedding = tf.keras.layers.concatenate([user_projected_embedding, item_embedding_previous, tf.gather(item_embedding_static, tbatch_itemids_previous), tf.gather(user_embedding_static, tbatch_userids)])
-
-                                # PREDICT NEXT ITEM EMBEDDING                            
-                                predicted_item_embedding = model.predict_item_embedding(user_item_embedding)
-
-                                # CALCULATE PREDICTION LOSS
                                 item_embedding_input = tf.gather(item_embeddings, tbatch_itemids)
-                                loss += MSELoss(tf.keras.layers.concatenate([item_embedding_input, tf.gather(item_embedding_static, tbatch_itemids)]), predicted_item_embedding)
 
-                                # UPDATE DYNAMIC EMBEDDINGS AFTER INTERACTION
-                                user_embedding_output = model.call(user_embedding_input, item_embedding_input, timediffs=user_timediffs_tensor, features=feature_tensor, select='user_update')
-                                item_embedding_output = model.call(user_embedding_input, item_embedding_input, timediffs=item_timediffs_tensor, features=feature_tensor, select='item_update')
-
-                                item_embeddings = item_embeddings.numpy()
-                                item_embeddings[tbatch_itemids, :] = item_embedding_output.numpy()
-                                item_embeddings = tf.Variable(item_embeddings)
-                                user_embeddings = user_embeddings.numpy()
-                                user_embeddings[tbatch_userids, :] = user_embedding_output.numpy()
-                                user_embeddings = tf.Variable(user_embeddings)
-
-                                user_embeddings_timeseries = user_embeddings_timeseries.numpy()
-                                user_embeddings_timeseries[tbatch_interactionids, :] = user_embedding_output.numpy()
-                                user_embeddings_timeseries = tf.Variable(user_embeddings_timeseries)
-                                item_embeddings_timeseries = item_embeddings_timeseries.numpy()
-                                item_embeddings_timeseries[tbatch_interactionids, :] = item_embedding_output.numpy()
-                                item_embeddings_timeseries = tf.Variable(item_embeddings_timeseries)
+                                user_embedding_output, item_embedding_output, predicted_item_embedding = jodie_call(model, user_embedding_input, item_embedding_input, item_embedding_previous, user_timediffs_tensor, item_timediffs_tensor, feature_tensor, static_item_embedding_previous, static_user_embeddings)
+                                
+                                # CALCULATE PREDICTION LOSS
+                                loss += calc_prediction_loss(item_embedding_input, static_item_embeddings, predicted_item_embedding, loss)
 
                                 # CALCULATE LOSS TO MAINTAIN TEMPORAL SMOOTHNESS
                                 loss += MSELoss(item_embedding_input, item_embedding_output)
                                 loss += MSELoss(user_embedding_input, user_embedding_output)
+
+                                item_embeddings = item_embeddings.numpy()
+                                item_embeddings[lib.current_tbatches_item[i], :] = item_embedding_output.numpy()
+                                item_embeddings = tf.constant(item_embeddings)
+                                user_embeddings = user_embeddings.numpy()
+                                user_embeddings[lib.current_tbatches_user[i], :] = user_embedding_output.numpy()
+                                user_embeddings = tf.constant(user_embeddings)
+
+                                user_embeddings_timeseries = user_embeddings_timeseries.numpy()
+                                user_embeddings_timeseries[lib.current_tbatches_interactionids[i], :] = user_embedding_output.numpy()
+                                user_embeddings_timeseries = tf.Variable(user_embeddings_timeseries)
+                                item_embeddings_timeseries = item_embeddings_timeseries.numpy()
+                                item_embeddings_timeseries[lib.current_tbatches_interactionids[i], :] = item_embedding_output.numpy()
+                                item_embeddings_timeseries = tf.Variable(item_embeddings_timeseries)
 
                         # BACKPROPAGATE ERROR AFTER END OF T-BATCH
                         total_loss += loss

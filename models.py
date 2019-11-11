@@ -72,7 +72,7 @@ class JODIE(tf.keras.Model):
             return user_projected_embedding
 
     def context_convert(self, embeddings, timediffs, features):
-        new_embeddings = tf.math.multiply(embeddings, tf.math.add(1, self.embedding_layer(timediffs)))
+        new_embeddings = tf.math.multiply(embeddings, tf.math.add(1.0, self.embedding_layer(timediffs)))
         return new_embeddings
 
     def predict_label(self, user_embeddings):
